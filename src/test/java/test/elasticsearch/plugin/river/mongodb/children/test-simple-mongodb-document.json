@@ -1,0 +1,8 @@
+{
+	"name": "Richard",
+	"tweets": [
+        {"_id": "51c8ddbae4b0548e8d233181", "text": "foo"},
+        {"_id": "51c8ddbae4b0548e8d233182", "text": "bar"},
+        {"_id": "51c8ddbae4b0548e8d233183", "text": "zoo"}
+    ]
+}
