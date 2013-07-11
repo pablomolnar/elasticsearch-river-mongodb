@@ -315,8 +315,7 @@ public abstract class RiverMongoDBTestAsbtract {
 				.actionGet();
 	}
 
-	protected void createRiver(String jsonDefinition, String river,
-			Object... args) throws Exception {
+	protected void createRiver(String jsonDefinition, String river, Object... args) throws Exception {
 		logger.info("Create river [{}]", river);
 		String setting = getJsonSettings(jsonDefinition, args);
 		logger.info("River setting [{}]", setting);
@@ -329,7 +328,8 @@ public abstract class RiverMongoDBTestAsbtract {
 		logger.info("Done Cluster Health, status " + clusterHealth.getStatus());
 		GetResponse response = getNode().client()
 				.prepareGet("_river", river, "_meta").execute().actionGet();
-		assertThat(response.isExists(), equalTo(true));	}
+		assertThat(response.isExists(), equalTo(true));
+    }
 
 	protected void createRiver(String jsonDefinition, Object... args)
 			throws Exception {

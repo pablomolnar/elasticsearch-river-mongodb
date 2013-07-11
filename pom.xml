@@ -113,9 +113,23 @@
          <version>4.8.2</version>
          <scope>test</scope>
       </dependency>
+       <dependency>
+           <groupId>com.gmongo</groupId>
+           <artifactId>gmongo</artifactId>
+           <version>1.2</version>
+       </dependency>
    </dependencies>
    <build>
       <testResources>
+          <testResource>
+              <directory>${basedir}/src/test/groovy</directory>
+              <includes>
+                  <include>**/*.json</include>
+                  <include>**/*.yml</include>
+                  <include>**/*.html</include>
+                  <include>**/*.pdf</include>
+              </includes>
+          </testResource>
          <testResource>
             <directory>${basedir}/src/test/java</directory>
             <includes>
