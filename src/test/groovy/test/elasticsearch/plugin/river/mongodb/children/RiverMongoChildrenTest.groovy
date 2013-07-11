@@ -18,6 +18,8 @@ import static org.elasticsearch.search.sort.SortOrder.ASC
 
 class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
 
+    static final int WAIT = 1000
+
     def db
     DBCollection dbCollection
 
@@ -69,7 +71,7 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
             def dbObject = new BasicDBObject(document)
             def result = dbCollection.insert(dbObject)
             logger.info("WriteResult: $result")
-            Thread.sleep(1000)
+            Thread.sleep(WAIT)
 
             // Refresh index just in case
             refreshIndex()
@@ -97,7 +99,7 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
             // #1: Replace whole document
             document.tweets[0].text = "fool"
             dbCollection.update([_id: new ObjectId(parentId)], document)
-            Thread.sleep(1000)
+            Thread.sleep(WAIT)
 
             response = node.client().prepareSearch(index).setQuery(fieldQuery("_parent", parentId)).addSort("text", ASC).execute().actionGet()
             logger.debug("SearchResponse $response")
@@ -113,7 +115,7 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
 
             // #2: Push one value to the array
             dbCollection.update([_id: new ObjectId(parentId)], [$push: [tweets:[_id: "51c8ddbae4b0548e8d233184", text: "abc"]]])
-            Thread.sleep(1000)
+            Thread.sleep(WAIT)
 
             response = node.client().prepareSearch(index).setQuery(fieldQuery("_parent", parentId)).addSort("text", ASC).execute().actionGet()
             logger.debug("SearchResponse $response")
@@ -130,7 +132,7 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
 
             // #3: Pull one value from the array
             dbCollection.update([_id: new ObjectId(parentId)], [$pull: [tweets:[text: "bar"]]])
-            Thread.sleep(1000)
+            Thread.sleep(WAIT)
 
             response = node.client().prepareSearch(index).setQuery(fieldQuery("_parent", parentId)).addSort("text", ASC).execute().actionGet()
             logger.debug("SearchResponse $response")
@@ -146,7 +148,7 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
 
             // -- DELETE --
             dbCollection.remove([_id: new ObjectId(parentId)])
-            Thread.sleep(1000)
+            Thread.sleep(WAIT)
 
             response = node.client().prepareSearch(index).setQuery(fieldQuery("_parent", parentId)).execute().actionGet()
             logger.debug("SearchResponse $response")
