@@ -817,7 +817,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
                         }
 
-                        // Make validations and insert children data as usual
+                        // Make some validations then insert children data as usual
                         if(!data.containsKey(children)) {
                             if (logger.isDebugEnabled()) {
                                 logger.debug("No children with key {} was found", children);
@@ -850,7 +850,13 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
                                 bulk.add(indexRequest(index).type(type).id(childId)
                                         .source(build(itemMap, childId)).routing(routing));
-                                insertedDocuments++;
+
+
+                                if(OPLOG_INSERT_OPERATION.equals(operation)) {
+                                    insertedDocuments++;
+                                } else {
+                                    updatedDocuments++;
+                                }
 
                             } else {
                                 if (logger.isDebugEnabled()) {
@@ -858,56 +864,51 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
                                 }
                             }
                         }
-                    }
 
-                    if (OPLOG_DELETE_OPERATION.equals(operation)) {
+                    } else if (OPLOG_DELETE_OPERATION.equals(operation)) {
                         logger.info("Delete children request [{}], [{}], [{}]", index, type, objectId);
                         client.prepareDeleteByQuery().setIndices(index).setTypes(type).setRouting(routing)
                                 .setQuery(new TermQueryBuilder("_parent", objectId)).execute();
                         deletedDocuments++;
-                    }
-
-                    if (OPLOG_COMMAND_OPERATION.equals(operation)) {
 
                     }
-
-                }
-
-
-                if (OPLOG_INSERT_OPERATION.equals(operation)) {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug(
-                                "Insert operation - id: {} - contains attachment: {}",
-                                operation, objectId,
-                                data.containsKey(IS_MONGODB_ATTACHMENT));
+                } else {
+                    if (OPLOG_INSERT_OPERATION.equals(operation)) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug(
+                                    "Insert operation - id: {} - contains attachment: {}",
+                                    operation, objectId,
+                                    data.containsKey(IS_MONGODB_ATTACHMENT));
+                        }
+                        bulk.add(indexRequest(index).type(type).id(objectId)
+                                .source(build(data, objectId)).routing(routing)
+                                .parent(parent));
+                        insertedDocuments++;
                     }
-                    bulk.add(indexRequest(index).type(type).id(objectId)
-                            .source(build(data, objectId)).routing(routing)
-                            .parent(parent));
-                    insertedDocuments++;
-                }
-                if (OPLOG_UPDATE_OPERATION.equals(operation)) {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug(
-                                "Update operation - id: {} - contains attachment: {}",
-                                objectId,
-                                data.containsKey(IS_MONGODB_ATTACHMENT));
+                    if (OPLOG_UPDATE_OPERATION.equals(operation)) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug(
+                                    "Update operation - id: {} - contains attachment: {}",
+                                    objectId,
+                                    data.containsKey(IS_MONGODB_ATTACHMENT));
+                        }
+                        bulk.add(new DeleteRequest(index, type, objectId).routing(
+                                routing).parent(parent));
+                        bulk.add(indexRequest(index).type(type).id(objectId)
+                                .source(build(data, objectId)).routing(routing)
+                                .parent(parent));
+                        updatedDocuments++;
+                        // new UpdateRequest(indexName, typeName, objectId)
                     }
-                    bulk.add(new DeleteRequest(index, type, objectId).routing(
-                            routing).parent(parent));
-                    bulk.add(indexRequest(index).type(type).id(objectId)
-                            .source(build(data, objectId)).routing(routing)
-                            .parent(parent));
-                    updatedDocuments++;
-                    // new UpdateRequest(indexName, typeName, objectId)
+                    if (OPLOG_DELETE_OPERATION.equals(operation)) {
+                        logger.info("Delete request [{}], [{}], [{}]", index, type,
+                                objectId);
+                        bulk.add(new DeleteRequest(index, type, objectId).routing(
+                                routing).parent(parent));
+                        deletedDocuments++;
+                    }
                 }
-                if (OPLOG_DELETE_OPERATION.equals(operation)) {
-                    logger.info("Delete request [{}], [{}], [{}]", index, type,
-                            objectId);
-                    bulk.add(new DeleteRequest(index, type, objectId).routing(
-                            routing).parent(parent));
-                    deletedDocuments++;
-                }
+
                 if (OPLOG_COMMAND_OPERATION.equals(operation)) {
                     if (dropCollection) {
                         if (data.containsKey(OPLOG_DROP_COMMAND_OPERATION)
@@ -934,6 +935,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
                                 index, type);
                     }
                 }
+
             } catch (IOException e) {
                 logger.warn("failed to parse {}", e, data);
             }

@@ -32,7 +32,6 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
 
     @BeforeClass
     public void createDatabase() {
-        logger.debug("createDatabase $database")
         db = new GMongo(mongo).getDB(database)
         db.setWriteConcern(WriteConcern.REPLICAS_SAFE)
         dbCollection = db.createCollection(collection, [:])
@@ -41,15 +40,12 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
 
     @AfterClass
     public void cleanUp() {
-        logger.info "Drop database $db.name"
         db.dropDatabase()
     }
 
     @Test
-    public void testChildrenAttribute() {
+    public void "Test insert-update-delete with children attribute"() {
         try {
-            logger.debug("Create river $river")
-
             // Create river
             createRiver(
                     "/test/elasticsearch/plugin/river/mongodb/children/test-mongodb-river-with-children.json", river,
@@ -72,9 +68,6 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
             def result = dbCollection.insert(dbObject)
             logger.info("WriteResult: $result")
             Thread.sleep(WAIT)
-
-            // Refresh index just in case
-            refreshIndex()
 
             // Assert index exists
             def request = new IndicesExistsRequest(index)
@@ -156,10 +149,6 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
             // Asserts data
             assert response.hits.totalHits == 0
 
-        } catch (e) {
-            logger.error("test failed.", e)
-            e.printStackTrace()
-            throw e
         } finally {
             super.deleteRiver()
             super.deleteIndex()
