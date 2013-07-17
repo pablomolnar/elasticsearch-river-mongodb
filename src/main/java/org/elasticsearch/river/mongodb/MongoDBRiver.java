@@ -529,7 +529,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
 		indexerThread = EsExecutors.daemonThreadFactory(
 				settings.globalSettings(), "mongodb_river_indexer").newThread(
-				new Indexer());
+				new Indexer(logger));
 		indexerThread.start();
 	}
 
@@ -685,14 +685,17 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
 	private class Indexer implements Runnable {
 
-		private final ESLogger logger = ESLoggerFactory.getLogger(this
-				.getClass().getName());
+		private final ESLogger logger;
 		private int deletedDocuments = 0;
 		private int insertedDocuments = 0;
 		private int updatedDocuments = 0;
 		private StopWatch sw;
 
-		@Override
+        public Indexer(ESLogger logger) {
+            this.logger = logger;
+        }
+
+        @Override
 		public void run() {
 			while (active) {
 				sw = new StopWatch().start();
@@ -846,11 +849,17 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
 						// For update operation delete current indexed children data by parent id (objectId)
 						if (OPLOG_UPDATE_OPERATION.equals(operation)) {
-							logger.info("Update children request [{}], [{}], [{}]", index, type, objectId);
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Update children request [{}], [{}], [{}]", index, type, objectId);
+                            }
 							client.prepareDeleteByQuery().setIndices(index).setTypes(type).setRouting(routing)
 									.setQuery(new TermQueryBuilder("_parent", objectId)).execute();
 
-						}
+						} else {
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Update children request [{}], [{}], [{}]", index, type, objectId);
+                            }
+                        }
 
 						// Make some validations then insert children data as usual
 						if(!data.containsKey(children)) {
@@ -863,7 +872,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
 						if(!(data.get(children) instanceof Iterable)) {
 							if (logger.isDebugEnabled()) {
-								logger.debug("Children interface does not match java.lang.Iterable and was {}", data.get(children).getClass().toString());
+								logger.debug("Children field interface does not match java.lang.Iterable and was {}", data.get(children).getClass().toString());
 							}
 
 							return lastTimestamp;
@@ -874,17 +883,17 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 						while (iterator.hasNext()){
 							Object child = iterator.next();
 							if(child instanceof Map) {
-								Map<String, Object> itemMap = (Map<String, Object>) child;
-								String childId = itemMap.get("_id").toString();
-								itemMap.put("_parent", objectId);
+								Map<String, Object> childMap = (Map<String, Object>) child;
+								childMap.put("_parent", objectId);
+
+                                // Try to get childId if has one
+                                String childId = extractChildId(childMap);
 
 								if (logger.isDebugEnabled()) {
-									logger.debug("Insert operation - parent id: {} - child id: {}",
-											operation, objectId, childId);
+									logger.debug("Insert child - parent id: {} - child id: {}", objectId, childId);
 								}
 
-								bulk.add(indexRequest(index).type(type).id(childId)
-										.source(build(itemMap, childId)).routing(routing));
+								bulk.add(indexRequest(index).type(type).id(childId).source(childMap).routing(routing));
 
 
 								if(OPLOG_INSERT_OPERATION.equals(operation)) {
@@ -895,7 +904,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
 							} else {
 								if (logger.isDebugEnabled()) {
-									logger.debug("child item class is {}. It is possible to index child item with a java.util.Map interface.", child.getClass().toString());
+									logger.debug("child element interface does not match java.util.Map and was {}.", child.getClass().toString());
 								}
 							}
 						}
@@ -994,14 +1003,28 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 			}
 		}
 
-		private String extractObjectId(Map<String, Object> ctx, String objectId) {
-			Object id = ctx.get("id");
-			if (id == null) {
-				return objectId;
-			} else {
-				return id.toString();
-			}
-		}
+        private String extractObjectId(Map<String, Object> ctx, String objectId) {
+            Object id = ctx.get("id");
+            if (id == null) {
+                return objectId;
+            } else {
+                return id.toString();
+            }
+        }
+
+        private String extractChildId(Map<String, Object> ctx) {
+            Object id = ctx.get("id");
+            if (id != null) {
+                return id.toString();
+            }
+
+            id = ctx.get("_id");
+            if (id != null) {
+                return id.toString();
+            }
+
+            return null;
+        }
 
 		private String extractParent(Map<String, Object> ctx) {
 			Object parent = ctx.get("_parent");
@@ -1039,12 +1062,12 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 		}
 
 		private void logStatistics() {
-			long totalDocuments = deletedDocuments + insertedDocuments;
+			long totalDocuments = deletedDocuments + insertedDocuments + updatedDocuments;
 			long totalTimeInSeconds = sw.stop().totalTime().seconds();
 			long totalDocumentsPerSecond = (totalTimeInSeconds == 0) ? totalDocuments
 					: totalDocuments / totalTimeInSeconds;
 			logger.info(
-					"Indexed {} documents, {} insertions {}, updates, {} deletions, {} documents per second",
+					"Indexed {} documents, {} insertions, {} updates, {} deletions, {} documents per second",
 					totalDocuments, insertedDocuments, updatedDocuments,
 					deletedDocuments, totalDocumentsPerSecond);
 		}
