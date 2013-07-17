@@ -29,6 +29,7 @@ import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -67,6 +68,7 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.common.xcontent.support.XContentMapValues;
+import org.elasticsearch.index.query.TermQueryBuilder;
 import org.elasticsearch.indices.IndexAlreadyExistsException;
 import org.elasticsearch.river.AbstractRiverComponent;
 import org.elasticsearch.river.River;
@@ -124,6 +126,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 	public final static String CREDENTIALS_FIELD = "credentials";
 	public final static String USER_FIELD = "user";
 	public final static String PASSWORD_FIELD = "password";
+	public final static String CHILDREN_FIELD = "children";
 	public final static String SCRIPT_FIELD = "script";
 	public final static String SCRIPT_TYPE_FIELD = "scriptType";
 	public final static String COLLECTION_FIELD = "collection";
@@ -189,6 +192,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 	protected final boolean dropCollection;
 	protected final Set<String> excludeFields;
 	protected final String includeCollection;
+	protected final String children;
 
 	private final ExecutableScript script;
 
@@ -382,6 +386,13 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 			} else {
 				script = null;
 			}
+
+			if (mongoSettings.containsKey(CHILDREN_FIELD)) {
+				children = mongoSettings.get(CHILDREN_FIELD).toString();
+		} else {
+				children = null;
+			}
+
 		} else {
 			mongoHost = DEFAULT_DB_HOST;
 			mongoPort = DEFAULT_DB_PORT;
@@ -407,6 +418,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 			excludeFields = null;
 			mongoUseSSL = false;
 			mongoSSLVerifyCertificate = false;
+			children = null;
 		}
 		mongoOplogNamespace = mongoDb + "." + mongoCollection;
 
@@ -761,7 +773,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 				logger.debug("updateBulkRequest for id: [{}], operation: [{}]",
 						objectId, operation);
 			}
-			
+
 			if (!includeCollection.isEmpty()) {
 				data.put(includeCollection, mongoCollection);
 			}
@@ -825,43 +837,114 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 				objectId = extractObjectId(ctx, objectId);
 				if (logger.isDebugEnabled()) {
 					logger.debug(
-							"Operation: {} - index: {} - type: {} - routing: {} - parent: {}",
-							operation, index, type, routing, parent);
+							"Operation: {} - index: {} - type: {} - routing: {} - parent: {} - children: {}",
+							operation, index, type, routing, parent, children);
 				}
-				if (OPLOG_INSERT_OPERATION.equals(operation)) {
-					if (logger.isDebugEnabled()) {
-						logger.debug(
-								"Insert operation - id: {} - contains attachment: {}",
-								operation, objectId,
-								data.containsKey(IS_MONGODB_ATTACHMENT));
+
+				if(children != null) {
+					if (OPLOG_INSERT_OPERATION.equals(operation) || OPLOG_UPDATE_OPERATION.equals(operation)) {
+
+						// For update operation delete current indexed children data by parent id (objectId)
+						if (OPLOG_UPDATE_OPERATION.equals(operation)) {
+							logger.info("Update children request [{}], [{}], [{}]", index, type, objectId);
+							client.prepareDeleteByQuery().setIndices(index).setTypes(type).setRouting(routing)
+									.setQuery(new TermQueryBuilder("_parent", objectId)).execute();
+
+						}
+
+						// Make some validations then insert children data as usual
+						if(!data.containsKey(children)) {
+							if (logger.isDebugEnabled()) {
+								logger.debug("No children with key {} was found", children);
+							}
+
+							return lastTimestamp;
+						}
+
+						if(!(data.get(children) instanceof Iterable)) {
+							if (logger.isDebugEnabled()) {
+								logger.debug("Children interface does not match java.lang.Iterable and was {}", data.get(children).getClass().toString());
+							}
+
+							return lastTimestamp;
+						}
+
+						Iterable childrenData = (Iterable) data.get(children);
+						Iterator iterator = childrenData.iterator();
+						while (iterator.hasNext()){
+							Object child = iterator.next();
+							if(child instanceof Map) {
+								Map<String, Object> itemMap = (Map<String, Object>) child;
+								String childId = itemMap.get("_id").toString();
+								itemMap.put("_parent", objectId);
+
+								if (logger.isDebugEnabled()) {
+									logger.debug("Insert operation - parent id: {} - child id: {}",
+											operation, objectId, childId);
+								}
+
+								bulk.add(indexRequest(index).type(type).id(childId)
+										.source(build(itemMap, childId)).routing(routing));
+
+
+								if(OPLOG_INSERT_OPERATION.equals(operation)) {
+									insertedDocuments++;
+								} else {
+									updatedDocuments++;
+								}
+
+							} else {
+								if (logger.isDebugEnabled()) {
+									logger.debug("child item class is {}. It is possible to index child item with a java.util.Map interface.", child.getClass().toString());
+								}
+							}
+						}
+
+					} else if (OPLOG_DELETE_OPERATION.equals(operation)) {
+						logger.info("Delete children request [{}], [{}], [{}]", index, type, objectId);
+						client.prepareDeleteByQuery().setIndices(index).setTypes(type).setRouting(routing)
+								.setQuery(new TermQueryBuilder("_parent", objectId)).execute();
+						deletedDocuments++;
+
 					}
-					bulk.add(indexRequest(index).type(type).id(objectId)
-							.source(build(data, objectId)).routing(routing)
-							.parent(parent));
-					insertedDocuments++;
-				}
-				if (OPLOG_UPDATE_OPERATION.equals(operation)) {
-					if (logger.isDebugEnabled()) {
-						logger.debug(
-								"Update operation - id: {} - contains attachment: {}",
-								objectId,
-								data.containsKey(IS_MONGODB_ATTACHMENT));
+				} else {
+
+					if (OPLOG_INSERT_OPERATION.equals(operation)) {
+						if (logger.isDebugEnabled()) {
+							logger.debug(
+									"Insert operation - id: {} - contains attachment: {}",
+									operation, objectId,
+									data.containsKey(IS_MONGODB_ATTACHMENT));
+						}
+						bulk.add(indexRequest(index).type(type).id(objectId)
+								.source(build(data, objectId)).routing(routing)
+								.parent(parent));
+						insertedDocuments++;
+
+					} else if (OPLOG_UPDATE_OPERATION.equals(operation)) {
+						if (logger.isDebugEnabled()) {
+							logger.debug(
+									"Update operation - id: {} - contains attachment: {}",
+									objectId,
+									data.containsKey(IS_MONGODB_ATTACHMENT));
+						}
+						bulk.add(new DeleteRequest(index, type, objectId).routing(
+								routing).parent(parent));
+						bulk.add(indexRequest(index).type(type).id(objectId)
+								.source(build(data, objectId)).routing(routing)
+								.parent(parent));
+						updatedDocuments++;
+						// new UpdateRequest(indexName, typeName, objectId)
+
+					} else if (OPLOG_DELETE_OPERATION.equals(operation)) {
+						logger.info("Delete request [{}], [{}], [{}]", index, type,
+								objectId);
+						bulk.add(new DeleteRequest(index, type, objectId).routing(
+								routing).parent(parent));
+						deletedDocuments++;
 					}
-					bulk.add(new DeleteRequest(index, type, objectId).routing(
-							routing).parent(parent));
-					bulk.add(indexRequest(index).type(type).id(objectId)
-							.source(build(data, objectId)).routing(routing)
-							.parent(parent));
-					updatedDocuments++;
-					// new UpdateRequest(indexName, typeName, objectId)
 				}
-				if (OPLOG_DELETE_OPERATION.equals(operation)) {
-					logger.info("Delete request [{}], [{}], [{}]", index, type,
-							objectId);
-					bulk.add(new DeleteRequest(index, type, objectId).routing(
-							routing).parent(parent));
-					deletedDocuments++;
-				}
+
 				if (OPLOG_COMMAND_OPERATION.equals(operation)) {
 					if (dropCollection) {
 						if (data.containsKey(OPLOG_DROP_COMMAND_OPERATION)
@@ -1132,6 +1215,29 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 						object.toString());
 			}
 
+			// If we're indexing children and is and update operation on the parent, let's
+			// check if the updates applies to the children field, if not just ignore the log
+			if(children != null && OPLOG_UPDATE_OPERATION.equals(operation)) {
+				Object objectPayload = object.get("$set");
+				if(objectPayload == null) {
+					objectPayload = object.get("$unset");
+				}
+
+				if(objectPayload instanceof DBObject) {
+					DBObject payload = (DBObject) objectPayload;
+
+					// Let's search the children key in a map of maps e.g: "a.b.c.d" in [a:[b:[c:[d:"test"]]]]
+					// OR if the children key is present in a flatten map e.g: "a.b.c.d" in [a.b.c.d.0.e:"test"]
+					if(MongoDBHelper.getNestedValue(children, payload) == null && !MongoDBHelper.hasFlattenKey(children, payload.toMap())) {
+						if (logger.isDebugEnabled()) {
+							logger.debug("Update does not apply to children field. Can be ignored. {}", entry);
+						}
+
+						return;
+					}
+				}
+			}
+
 			object = MongoDBHelper.applyExcludeFields(object, excludeFields);
 
 			// Initial support for sharded collection -
@@ -1370,7 +1476,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 	/**
 	 * Adds an index request operation to a bulk request, updating the last
 	 * timestamp for a given namespace (ie: host:dbName.collectionName)
-	 * 
+     *
 	 * @param bulk
 	 */
 	private void updateLastTimestamp(final String namespace,
