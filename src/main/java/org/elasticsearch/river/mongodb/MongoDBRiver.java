@@ -1175,6 +1175,29 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
                         object.toString());
             }
 
+            // If we're indexing children and is and update operation on the parent, let's
+            // check if the updates applies to the children field, if not just ignore the log
+            if(children != null && OPLOG_UPDATE_OPERATION.equals(operation)) {
+                Object objectPayload = object.get("$set");
+                if(objectPayload == null) {
+                    objectPayload = object.get("$unset");
+                }
+
+                if(objectPayload instanceof DBObject) {
+                    DBObject payload = (DBObject) objectPayload;
+
+                    // Let's search the children key in a map of maps e.g: "a.b.c.d" in [a:[b:[c:[d:"test"]]]]
+                    // OR if the children key is present in a flatten map e.g: "a.b.c.d" in [a.b.c.d.0.e:"test"]
+                    if(MongoDBHelper.getNestedValue(children, payload) == null && !MongoDBHelper.hasFlattenKey(children, payload.toMap())) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Update does not apply to children field. Can be ignored. {}", entry);
+                        }
+
+                        return;
+                    }
+                }
+            }
+
             object = MongoDBHelper.applyExcludeFields(object, excludeFields);
 
             // Initial support for sharded collection -
