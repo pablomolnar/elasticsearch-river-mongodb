@@ -55,7 +55,7 @@ class RiverMongoChildrenTest extends RiverMongoDBTestAsbtract {
 
             // -- INSERT --
             def document = [
-                    name: "Richard",
+                    name: "Pablo",
                     tweets: [
                             [_id: "51c8ddbae4b0548e8d233181", text: "foo"],
                             [_id: "51c8ddbae4b0548e8d233182", text: "bar"],
