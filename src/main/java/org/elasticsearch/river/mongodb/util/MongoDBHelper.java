@@ -116,15 +116,15 @@ public abstract class MongoDBHelper {
 	}
 
     // Retrieves a nested value. e.g.: getNestedValue("a.b.c.d", [a:[b:[c:[d:"test"]]]]) returns "test"
-    public static Object getNestedValue(String key, DBObject object) {
+    public static Object getNestedValue(String key, Map object) {
         String[] keys = key.split("\\.", 2);
         Object value = object.get(keys[0]);
 
         if(value == null) return null;
 
         if(keys.length > 1) {
-            if (value instanceof DBObject) {
-                return getNestedValue(keys[1], (DBObject) value);
+            if (value instanceof Map) {
+                return getNestedValue(keys[1], (Map) value);
             } else {
                 return null;
             }

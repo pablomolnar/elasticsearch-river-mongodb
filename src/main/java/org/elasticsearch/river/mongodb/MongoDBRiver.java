@@ -60,7 +60,6 @@ import org.elasticsearch.common.StopWatch;
 import org.elasticsearch.common.collect.ImmutableMap;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.logging.ESLogger;
-import org.elasticsearch.common.logging.ESLoggerFactory;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.common.util.concurrent.jsr166y.LinkedTransferQueue;
@@ -127,6 +126,8 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 	public final static String USER_FIELD = "user";
 	public final static String PASSWORD_FIELD = "password";
 	public final static String CHILDREN_FIELD = "children";
+    public final static String CHILDREN_MAP_FIELD = "field";
+    public final static String CHILDREN_MAP_INCLUDE_PARENT_FIELDS = "include_parent_fields";
 	public final static String SCRIPT_FIELD = "script";
 	public final static String SCRIPT_TYPE_FIELD = "scriptType";
 	public final static String COLLECTION_FIELD = "collection";
@@ -193,6 +194,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 	protected final Set<String> excludeFields;
 	protected final String includeCollection;
 	protected final String children;
+    protected final Set<String> childrenIncludeParentFields;
 
 	private final ExecutableScript script;
 
@@ -387,10 +389,26 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 				script = null;
 			}
 
+
 			if (mongoSettings.containsKey(CHILDREN_FIELD)) {
-				children = mongoSettings.get(CHILDREN_FIELD).toString();
+                Object childrenSettings = mongoSettings.get(CHILDREN_FIELD);
+                if(childrenSettings instanceof String) {
+                    children = (String) mongoSettings.get(CHILDREN_FIELD);
+                    childrenIncludeParentFields = null;
+                } else if(childrenSettings instanceof Map) {
+                    Map childrenMap = (Map) childrenSettings;
+                    children = (String) childrenMap.get(CHILDREN_MAP_FIELD);
+
+                    ArrayList<String> list = (ArrayList<String>) childrenMap.get(CHILDREN_MAP_INCLUDE_PARENT_FIELDS);
+                    childrenIncludeParentFields = new HashSet(list);
+                } else {
+                    children = null;
+                    childrenIncludeParentFields = null;
+                }
+
 		} else {
 				children = null;
+                childrenIncludeParentFields = null;
 			}
 
 		} else {
@@ -419,6 +437,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 			mongoUseSSL = false;
 			mongoSSLVerifyCertificate = false;
 			children = null;
+            childrenIncludeParentFields = null;
 		}
 		mongoOplogNamespace = mongoDb + "." + mongoCollection;
 
@@ -857,7 +876,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 
 						} else {
                             if (logger.isDebugEnabled()) {
-                                logger.debug("Update children request [{}], [{}], [{}]", index, type, objectId);
+                                logger.debug("Insert children request [{}], [{}], [{}]", index, type, objectId);
                             }
                         }
 
@@ -886,6 +905,14 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 								Map<String, Object> childMap = (Map<String, Object>) child;
 								childMap.put("_parent", objectId);
 
+                                if(childrenIncludeParentFields != null) {
+                                    // Include parent fields
+                                    for(String parentField : childrenIncludeParentFields) {
+                                        Object value = MongoDBHelper.getNestedValue(parentField, data);
+                                        childMap.put(parentField, value);
+                                    }
+                                }
+
                                 // Try to get childId if has one
                                 String childId = extractChildId(childMap);
 
@@ -910,7 +937,10 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 						}
 
 					} else if (OPLOG_DELETE_OPERATION.equals(operation)) {
-						logger.info("Delete children request [{}], [{}], [{}]", index, type, objectId);
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Delete children request [{}], [{}], [{}]", index, type, objectId);
+                        }
+
 						client.prepareDeleteByQuery().setIndices(index).setTypes(type).setRouting(routing)
 								.setQuery(new TermQueryBuilder("_parent", objectId)).execute();
 						deletedDocuments++;
@@ -933,9 +963,9 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 					} else if (OPLOG_UPDATE_OPERATION.equals(operation)) {
 						if (logger.isDebugEnabled()) {
 							logger.debug(
-									"Update operation - id: {} - contains attachment: {}",
-									objectId,
-									data.containsKey(IS_MONGODB_ATTACHMENT));
+                                    "Update operation - id: {} - contains attachment: {}",
+                                    objectId,
+                                    data.containsKey(IS_MONGODB_ATTACHMENT));
 						}
 						bulk.add(new DeleteRequest(index, type, objectId).routing(
 								routing).parent(parent));
@@ -1238,28 +1268,14 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 						object.toString());
 			}
 
-			// If we're indexing children and is and update operation on the parent, let's
-			// check if the updates applies to the children field, if not just ignore the log
-			if(children != null && OPLOG_UPDATE_OPERATION.equals(operation)) {
-				Object objectPayload = object.get("$set");
-				if(objectPayload == null) {
-					objectPayload = object.get("$unset");
-				}
+			// Check if the update is related to the children field, if not just ignore the log
+            if(childrenUpdatesFilter(entry)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Update does not apply to children field. Can be ignored. {}", entry);
+                }
 
-				if(objectPayload instanceof DBObject) {
-					DBObject payload = (DBObject) objectPayload;
-
-					// Let's search the children key in a map of maps e.g: "a.b.c.d" in [a:[b:[c:[d:"test"]]]]
-					// OR if the children key is present in a flatten map e.g: "a.b.c.d" in [a.b.c.d.0.e:"test"]
-					if(MongoDBHelper.getNestedValue(children, payload) == null && !MongoDBHelper.hasFlattenKey(children, payload.toMap())) {
-						if (logger.isDebugEnabled()) {
-							logger.debug("Update does not apply to children field. Can be ignored. {}", entry);
-						}
-
-						return;
-					}
-				}
-			}
+                return;
+            }
 
 			object = MongoDBHelper.applyExcludeFields(object, excludeFields);
 
@@ -1324,9 +1340,59 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 			}
 		}
 
-		/*
-		 * Extract "_id" from "o" if it fails try to extract from "o2"
-		 */
+        // Filter updates operations not related to the children
+        private boolean childrenUpdatesFilter(DBObject entry) {
+            if(children == null) return false;
+
+            // Only updates operations can be filtered
+            String operation = entry.get(OPLOG_OPERATION).toString();
+            if(!OPLOG_UPDATE_OPERATION.equals(operation)) return false;
+
+
+            DBObject object = (DBObject) entry.get(OPLOG_OBJECT);
+            Object objectPayload = object;
+
+            if(object.containsField("$set")) {
+                objectPayload = object.get("$set");
+            } else if(object.containsField("$unset")) {
+                objectPayload = object.get("$unset");
+            }
+
+            // If payload is not a DBObject then filter the entry
+            if(!(objectPayload instanceof DBObject)) return true;
+            Map payload = ((DBObject) objectPayload).toMap();
+
+            // Check if the children key is present in a map of maps e.g: "a.b.c.d" in [a:[b:[c:[d:"test"]]]]
+            if(MongoDBHelper.getNestedValue(children, payload) != null) {
+                return false;
+            }
+
+            // Check if the children key is present in a flatten map e.g: "a.b.c.d" in [a.b.c.d.0.e:"test"]
+            if(MongoDBHelper.hasFlattenKey(children, payload)) {
+                return false;
+            }
+
+            // Check if a include_parent_fields has been updated
+            if(childrenIncludeParentFields != null) {
+                for(String parentField: childrenIncludeParentFields) {
+                    if(MongoDBHelper.getNestedValue(parentField, payload) != null) {
+                        return false;
+                    }
+
+                    if(MongoDBHelper.hasFlattenKey(parentField, payload)) {
+                        return false;
+                    }
+                }
+            }
+
+
+            // We can discard this entry due is not related to children
+            return true;
+        }
+
+        /*
+         * Extract "_id" from "o" if it fails try to extract from "o2"
+         */
 		private String getObjectIdFromOplogEntry(DBObject entry) {
 			if (entry.containsField(OPLOG_OBJECT)) {
 				DBObject object = (DBObject) entry.get(OPLOG_OBJECT);
