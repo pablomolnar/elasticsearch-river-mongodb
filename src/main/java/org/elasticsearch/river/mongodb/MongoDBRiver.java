@@ -53,6 +53,7 @@ import org.elasticsearch.action.bulk.BulkRequestBuilder;
 import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.delete.DeleteRequest;
 import org.elasticsearch.action.get.GetResponse;
+import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
@@ -67,6 +68,7 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.common.xcontent.support.XContentMapValues;
+import org.elasticsearch.index.query.TermFilterBuilder;
 import org.elasticsearch.index.query.TermQueryBuilder;
 import org.elasticsearch.indices.IndexAlreadyExistsException;
 import org.elasticsearch.river.AbstractRiverComponent;
@@ -97,6 +99,7 @@ import com.mongodb.ServerAddress;
 import com.mongodb.gridfs.GridFS;
 import com.mongodb.gridfs.GridFSDBFile;
 import com.mongodb.util.JSON;
+import org.elasticsearch.search.SearchHit;
 
 /**
  * @author richardwilly98 (Richard Louapre)
@@ -871,8 +874,14 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
                             if (logger.isDebugEnabled()) {
                                 logger.debug("Update children request [{}], [{}], [{}]", index, type, objectId);
                             }
-							client.prepareDeleteByQuery().setIndices(index).setTypes(type).setRouting(routing)
-									.setQuery(new TermQueryBuilder("_parent", objectId)).execute();
+
+                            Iterator<SearchHit> hitIterator = client.prepareSearch().setIndices(index).setTypes(type).setRouting(routing).addField("_id")
+                                    .setFilter(new TermFilterBuilder("_parent", objectId)).execute().actionGet().getHits().iterator();
+
+                            while (hitIterator.hasNext()) {
+                                bulk.add(new DeleteRequest(index, type, hitIterator.next().getId()).routing(routing).parent(parent));
+                                deletedDocuments++;
+                            }
 
 						} else {
                             if (logger.isDebugEnabled()) {
@@ -941,10 +950,13 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
                             logger.debug("Delete children request [{}], [{}], [{}]", index, type, objectId);
                         }
 
-						client.prepareDeleteByQuery().setIndices(index).setTypes(type).setRouting(routing)
-								.setQuery(new TermQueryBuilder("_parent", objectId)).execute();
-						deletedDocuments++;
+                        Iterator<SearchHit> hitIterator = client.prepareSearch().setIndices(index).setTypes(type).setRouting(routing).addField("_id")
+                                .setFilter(new TermFilterBuilder("_parent", objectId)).execute().actionGet().getHits().iterator();
 
+                        while (hitIterator.hasNext()) {
+                            bulk.add(new DeleteRequest(index, type, hitIterator.next().getId()).routing(routing).parent(parent));
+                            deletedDocuments++;
+                        }
 					}
 				} else {
 
