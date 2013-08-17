@@ -1289,7 +1289,9 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
                 return;
             }
 
+            logger.debug("Before exclude fields {}, object {}", excludeFields, object);
 			object = MongoDBHelper.applyExcludeFields(object, excludeFields);
+            logger.debug("After exclude fields, object {}", object);
 
 			// Initial support for sharded collection -
 			// https://jira.mongodb.org/browse/SERVER-4333
@@ -1503,6 +1505,7 @@ public class MongoDBRiver extends AbstractRiverComponent implements River {
 						operation, currentTimestamp, update);
 			}
 			for (DBObject item : slurpedCollection.find(update)) {
+                MongoDBHelper.applyExcludeFields(item, excludeFields);
 				addToStream(operation, currentTimestamp, item.toMap());
 			}
 		}
